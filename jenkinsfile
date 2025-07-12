@@ -22,40 +22,57 @@ pipeline {
             }
         }
 
-        stage('Provision Infrastructure with Terraform') {
-            steps {
-                dir('terraform') {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                            bat 'terraform init'
-                            bat 'terraform apply -auto-approve'
-                        }
-                    }
-                    script {
-                        env.FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
-                        env.BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
-                        env.ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
-
-                        echo "Captured Outputs:"
-                        echo "FRONTEND_IP=${env.FRONTEND_IP}"
-                        echo "BACKEND_IP=${env.BACKEND_IP}"
-                        echo "ECR_REPO=${env.ECR_REPO}"
-                    }
+  stage('Provision Infrastructure with Terraform') {
+    steps {
+        dir('terraform') {
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                withEnv([
+                    "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
+                    "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
+                    "AWS_SESSION_TOKEN=${env.AWS_SESSION_TOKEN}",
+                    "AWS_DEFAULT_REGION=${AWS_REGION}"
+                ]) {
+                    bat 'terraform init'
+                    bat 'terraform apply -auto-approve'
                 }
             }
+            script {
+                env.FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
+                env.BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
+                env.ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
+
+                echo "Captured Outputs:"
+                echo "FRONTEND_IP=${env.FRONTEND_IP}"
+                echo "BACKEND_IP=${env.BACKEND_IP}"
+                echo "ECR_REPO=${env.ECR_REPO}"
+            }
         }
+    }
+}
 
         stage('Build and Push Docker Image to ECR') {
             steps {
                 script {
+                    dir('terraform') {
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                               def ECR_REPO = bat(
+                                    script: 'terraform output -raw ecr_repository_url',
+                                    returnStdout: true
+                                ).trim()
+                            }
+                        }
+                    }
+
                     bat """
-                        docker build -t ${env.ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
+                        docker build -t ${ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
                     """
+
                     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
                         withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
                             bat """
-                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REPO}
-                                docker push ${env.ECR_REPO}:${IMAGE_TAG}
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+                                docker push ${ECR_REPO}:${IMAGE_TAG}
                             """
                         }
                     }
@@ -65,21 +82,33 @@ pipeline {
 
         stage('Deploy Backend to Private EC2') {
             steps {
-                sshagent(credentials: ['ec2-ssh']) {
-                    bat """
-                        pscp -i path\\to\\private-key.ppk -r journalapp ubuntu@${env.FRONTEND_IP}:/home/ubuntu/
-                        plink -i path\\to\\private-key.ppk ubuntu@${env.FRONTEND_IP} "
-                            ssh ubuntu@${env.BACKEND_IP} '
-                                sudo apt update
-                                sudo apt install -y docker.io awscli
-                                aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${env.ECR_REPO}
-                                sudo docker pull ${env.ECR_REPO}:${IMAGE_TAG}
-                                sudo docker stop backend || true
-                                sudo docker rm backend || true
-                                sudo docker run -d --name backend -p 9090:9090 ${env.ECR_REPO}:${IMAGE_TAG}
-                            '
-                        "
-                    """
+                script {
+                    dir('terraform') {
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                                FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
+                                BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
+                                ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
+                            }
+                        }
+                    }
+
+                    sshagent(credentials: ['ec2-ssh']) {
+                        bat """
+                            pscp -i path\\to\\private-key.ppk -r journalapp ubuntu@${FRONTEND_IP}:/home/ubuntu/
+                            plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
+                                ssh ubuntu@${BACKEND_IP} '
+                                    sudo apt update
+                                    sudo apt install -y docker.io awscli
+                                    aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
+                                    sudo docker pull ${ECR_REPO}:${IMAGE_TAG}
+                                    sudo docker stop backend || true
+                                    sudo docker rm backend || true
+                                    sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
+                                '
+                            "
+                        """
+                    }
                 }
             }
         }
@@ -87,20 +116,30 @@ pipeline {
         stage('Deploy Frontend to Public EC2') {
             steps {
                 script {
+                    dir('terraform') {
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                                FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
+                                BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
+                            }
+                        }
+                    }
+
                     bat """
-                        powershell -Command "(Get-Content frontend\\index.html) -replace 'http://localhost:9090', 'http://${env.BACKEND_IP}:9090' | Set-Content frontend\\index.html"
+                        powershell -Command "(Get-Content frontend\\index.html) -replace 'http://localhost:9090', 'http://${BACKEND_IP}:9090' | Set-Content frontend\\index.html"
                     """
-                }
-                sshagent(credentials: ['ec2-ssh']) {
-                    bat """
-                        pscp -i path\\to\\private-key.ppk frontend\\index.html ubuntu@${env.FRONTEND_IP}:/home/ubuntu/index.html
-                        plink -i path\\to\\private-key.ppk ubuntu@${env.FRONTEND_IP} "
-                            sudo apt update
-                            sudo apt install -y nginx
-                            sudo mv /home/ubuntu/index.html /var/www/html/index.html
-                            sudo systemctl restart nginx
-                        "
-                    """
+
+                    sshagent(credentials: ['ec2-ssh']) {
+                        bat """
+                            pscp -i path\\to\\private-key.ppk frontend\\index.html ubuntu@${FRONTEND_IP}:/home/ubuntu/index.html
+                            plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
+                                sudo apt update
+                                sudo apt install -y nginx
+                                sudo mv /home/ubuntu/index.html /var/www/html/index.html
+                                sudo systemctl restart nginx
+                            "
+                        """
+                    }
                 }
             }
         }
