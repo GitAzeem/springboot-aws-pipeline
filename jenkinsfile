@@ -107,24 +107,27 @@ pipeline {
                     echo "Backend IP: ${BACKEND_IP}"
                     echo "ECR Repo: ${ECR_REPO}"
 
-                    // Get instance ID - simplified command without line breaks
-                    def getInstanceId = """
-                        aws ec2 describe-instances --filters Name=private-ip-address,Values=${BACKEND_IP} --query Reservations[0].Instances[0].InstanceId --output text
-                    """.trim()
-                    
+                    // Get instance ID - fixed command
                     def instanceId = bat(
-                        script: getInstanceId,
+                        script: "aws ec2 describe-instances --filters Name=private-ip-address,Values=${BACKEND_IP} --query Reservations[0].Instances[0].InstanceId --output text",
                         returnStdout: true
                     ).trim()
 
                     echo "Instance ID: ${instanceId}"
 
-                    // Deploy using SSM - simplified command
-                    def deployCommand = """
-                        aws ssm send-command --instance-ids ${instanceId} --document-name "AWS-RunShellScript" --parameters '{"commands":["sudo docker stop backend || true","sudo docker rm backend || true","aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}","sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"]}' --region ${AWS_REGION}
-                    """.trim()
-                    
-                    bat(deployCommand)
+                    // Deploy using SSM - fixed command
+                    bat """
+                        aws ssm send-command \
+                            --instance-ids ${instanceId} \
+                            --document-name "AWS-RunShellScript" \
+                            --parameters '{"commands":[
+                                "sudo docker stop backend || true",
+                                "sudo docker rm backend || true",
+                                "aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}",
+                                "sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"
+                            ]}' \
+                            --region ${AWS_REGION}
+                    """
                 }
             }
         }
