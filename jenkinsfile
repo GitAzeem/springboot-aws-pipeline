@@ -84,38 +84,44 @@ pipeline {
     }
 }
         stage('Deploy Backend to Private EC2') {
-            steps {
-                script {
-                    dir('terraform') {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                                FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
-                                BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
-                                ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
-                            }
-                        }
-                    }
+    steps {
+        script {
+            // Get infrastructure details
+            def FRONTEND_IP = bat(
+                script: 'cd terraform && terraform output -raw frontend_public_ip', 
+                returnStdout: true
+            ).trim()
+            
+            def BACKEND_IP = bat(
+                script: 'cd terraform && terraform output -raw backend_private_ip',
+                returnStdout: true
+            ).trim()
+            
+            def ECR_REPO = bat(
+                script: 'cd terraform && terraform output -raw ecr_repository_url',
+                returnStdout: true
+            ).trim()
 
-                    sshagent(credentials: ['ec2-ssh']) {
-                        bat """
-                            pscp -i path\\to\\private-key.ppk -r journalapp ubuntu@${FRONTEND_IP}:/home/ubuntu/
-                            plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
-                                ssh ubuntu@${BACKEND_IP} '
-                                    sudo apt update
-                                    sudo apt install -y docker.io awscli
-                                    aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
-                                    sudo docker pull ${ECR_REPO}:${IMAGE_TAG}
-                                    sudo docker stop backend || true
-                                    sudo docker rm backend || true
-                                    sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
-                                '
-                            "
-                        """
-                    }
-                }
+            echo "Using Frontend: ${FRONTEND_IP} to access Backend: ${BACKEND_IP}"
+            
+            // Deploy with correct SSH credential ID
+            sshagent(credentials: ['bastion-ssh-main.pem']) {
+                bat """
+                    plink -ssh -i "%SSH_KEY%" ubuntu@${FRONTEND_IP} "
+                        ssh ubuntu@${BACKEND_IP} '
+                            sudo apt update -y
+                            sudo apt install -y docker.io awscli
+                            aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
+                            sudo docker stop backend || true
+                            sudo docker rm backend || true
+                            sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
+                        '
+                    "
+                """
             }
         }
-
+    }
+}
         stage('Deploy Frontend to Public EC2') {
             steps {
                 script {
