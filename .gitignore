@@ -1,9 +1,33 @@
+# Spring Boot and Java
 HELP.md
+*.log
+*.jar
+*.war
+*.ear
 target/
-!.mvn/wrapper/maven-wrapper.jar
+build/
 !**/src/main/**/target/
 !**/src/test/**/target/
+!**/src/main/**/build/
+!**/src/test/**/build/
 
+# Maven
+!.mvn/wrapper/maven-wrapper.jar
+
+# YAML configs
+*.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+terraform.tfvars
+
+# Node modules (if ever using frontend)
+node_modules/
+
+# IDEs and editors
 ### STS ###
 .apt_generated
 .classpath
@@ -12,23 +36,25 @@ target/
 .settings
 .springBeans
 .sts4-cache
-*.yml
-*.log
+
 ### IntelliJ IDEA ###
-.idea
+.idea/
 *.iws
 *.iml
 *.ipr
 /htmlReport
+
 ### NetBeans ###
 /nbproject/private/
 /nbbuild/
 /dist/
 /nbdist/
 /.nb-gradle/
-build/
-!**/src/main/**/build/
-!**/src/test/**/build/
 
 ### VS Code ###
 .vscode/
+
+# System files
+.DS_Store
+Thumbs.db
+
