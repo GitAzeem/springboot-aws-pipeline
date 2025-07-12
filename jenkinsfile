@@ -26,41 +26,50 @@ pipeline {
         stage('Provision Infrastructure with Terraform') {
             steps {
                 dir('terraform') {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                        bat 'terraform init'
-                        bat 'terraform apply -auto-approve'
-                    }
+                    withCredentials([[
+                            $class: 'AmazonWebServicesCredentialsBinding',
+                            credentialsId: 'aws-creds-backup'
+                        ]]) {
+                            withEnv([
+                                "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
+                                "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
+                                "AWS_DEFAULT_REGION=${AWS_REGION}"
+                            ]) {
+                                bat 'terraform init'
+                                bat 'terraform apply -auto-approve'
+                            }
+                        }
+
                 }
             }
         }
 
-        stage('Build and Push Docker Image to ECR') {
+       stage('Build and Push Docker Image to ECR') {
             steps {
                 script {
                     dir('terraform') {
-                        ECR_REPO = bat(
-                            script: '@terraform output -raw ecr_repository_url',
-                            returnStdout: true
-                        ).trim().replaceAll("\r", "")
+                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                            ECR_REPO = bat(
+                                script: '@terraform output -raw ecr_repository_url',
+                                returnStdout: true
+                            ).trim().replaceAll("\r", "")
+                        }
                     }
                     
                     bat """
                         docker build -t ${ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
                     """
 
-                    withCredentials([usernamePassword(credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
                         bat """
-                            aws configure set aws_access_key_id %AWS_ACCESS_KEY_ID%
-                            aws configure set aws_secret_access_key %AWS_SECRET_ACCESS_KEY%
-                            aws configure set default.region ${AWS_REGION}
-
                             aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
                             docker push ${ECR_REPO}:${IMAGE_TAG}
                         """
                     }
                 }
             }
-}
+        }
+
 
 
         stage('Deploy Backend to Private EC2') {
