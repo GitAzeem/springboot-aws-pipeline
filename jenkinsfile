@@ -86,7 +86,6 @@ pipeline {
        stage('Deploy Backend to Private EC2') {
     steps {
         script {
-            // Get infrastructure details dynamically
             withCredentials([[
                 $class: 'AmazonWebServicesCredentialsBinding',
                 credentialsId: 'aws-creds-backup',
@@ -94,18 +93,18 @@ pipeline {
                 secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
             ]]) {
                 withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                    // Get outputs from Terraform
-                    def FRONTEND_IP = sh(
+                    // Get outputs from Terraform using bat
+                    def FRONTEND_IP = bat(
                         script: 'cd terraform && terraform output -raw frontend_public_ip',
                         returnStdout: true
                     ).trim()
                     
-                    def BACKEND_IP = sh(
+                    def BACKEND_IP = bat(
                         script: 'cd terraform && terraform output -raw backend_private_ip',
                         returnStdout: true
                     ).trim()
                     
-                    def ECR_REPO = sh(
+                    def ECR_REPO = bat(
                         script: 'cd terraform && terraform output -raw ecr_repository_url',
                         returnStdout: true
                     ).trim()
@@ -114,62 +113,33 @@ pipeline {
                     echo "Backend IP: ${BACKEND_IP}"
                     echo "ECR Repo: ${ECR_REPO}"
 
-                    // Method 1: Native SSH with proper key handling
-                    try {
-                        withCredentials([file(credentialsId: 'bastion-ssh-main.pem', variable: 'SSH_KEY')]) {
-                            // Create properly formatted key file
-                            writeFile file: "${WORKSPACE}/ssh_key.pem", text: readFile("${SSH_KEY}")
-                            sh "chmod 600 ${WORKSPACE}/ssh_key.pem"
-                            
-                            // SSH deployment command
-                            sh """
-                                ssh -i "${WORKSPACE}/ssh_key.pem" \
-                                    -o StrictHostKeyChecking=no \
-                                    -o UserKnownHostsFile=/dev/null \
-                                    ubuntu@${FRONTEND_IP} << 'ENDSSH'
-                                    ssh ubuntu@${BACKEND_IP} '
-                                        sudo apt update -y
-                                        sudo apt install -y docker.io awscli
-                                        aws ecr get-login-password --region ${AWS_REGION} | \\
-                                        sudo docker login --username AWS --password-stdin ${ECR_REPO}
-                                        sudo docker stop backend || true
-                                        sudo docker rm backend || true
-                                        sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
-                                    '
-                                ENDSSH
-                            """
-                        }
-                    } catch (Exception e) {
-                        echo "SSH method failed, trying AWS Systems Manager..."
-                        
-                        // Method 2: AWS Systems Manager fallback
-                        def instanceId = sh(
-                            script: """
-                                aws ec2 describe-instances \
-                                    --filters "Name=private-ip-address,Values=${BACKEND_IP}" \
-                                    --query "Reservations[0].Instances[0].InstanceId" \
-                                    --output text
-                            """,
-                            returnStdout: true
-                        ).trim()
-                        
-                        sh """
-                            aws ssm send-command \
-                                --instance-ids ${instanceId} \
-                                --document-name "AWS-RunShellScript" \
-                                --parameters '{
-                                    "commands":[
-                                        "sudo apt update -y",
-                                        "sudo apt install -y docker.io awscli",
-                                        "aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}",
-                                        "sudo docker stop backend || true",
-                                        "sudo docker rm backend || true",
-                                        "sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"
-                                    ]
-                                }' \
-                                --region ${AWS_REGION}
-                        """
-                    }
+                    // Using AWS SSM as the primary method since SSH is problematic on Windows
+                    def instanceId = bat(
+                        script: """
+                            aws ec2 describe-instances \
+                                --filters "Name=private-ip-address,Values=${BACKEND_IP}" \
+                                --query "Reservations[0].Instances[0].InstanceId" \
+                                --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    
+                    bat """
+                        aws ssm send-command \
+                            --instance-ids ${instanceId} \
+                            --document-name "AWS-RunShellScript" \
+                            --parameters '{
+                                "commands":[
+                                    "sudo apt update -y",
+                                    "sudo apt install -y docker.io awscli",
+                                    "aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}",
+                                    "sudo docker stop backend || true",
+                                    "sudo docker rm backend || true",
+                                    "sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"
+                                ]
+                            }' \
+                            --region ${AWS_REGION}
+                    """
                 }
             }
         }
