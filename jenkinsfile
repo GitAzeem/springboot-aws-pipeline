@@ -86,62 +86,55 @@ pipeline {
         stage('Deploy Backend to Private EC2') {
     steps {
         script {
-            // Get infrastructure details with explicit AWS credentials
-            def FRONTEND_IP = ''
-            def BACKEND_IP = ''
-            def ECR_REPO = ''
+            // Use the values we already successfully retrieved
+            def FRONTEND_IP = "3.239.179.8"
+            def BACKEND_IP = "10.0.2.189"
+            def ECR_REPO = "471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo"
             
-            dir('terraform') {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-creds-backup',
-                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                ]]) {
-                    withEnv([
-                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
-                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
-                        "AWS_DEFAULT_REGION=${AWS_REGION}"
-                    ]) {
-                        // Refresh state first
-                        bat 'terraform refresh'
-                        
-                        // Get outputs
-                        FRONTEND_IP = bat(
-                            script: 'terraform output -raw frontend_public_ip',
-                            returnStdout: true
-                        ).trim()
-                        
-                        BACKEND_IP = bat(
-                            script: 'terraform output -raw backend_private_ip',
-                            returnStdout: true
-                        ).trim()
-                        
-                        ECR_REPO = bat(
-                            script: 'terraform output -raw ecr_repository_url',
-                            returnStdout: true
-                        ).trim()
-                    }
+            // Method 1: Native Windows SSH (Windows 10/Server 2019+)
+            try {
+                withCredentials([file(credentialsId: 'bastion-ssh-main.pem', variable: 'SSH_KEY')]) {
+                    bat """
+                        ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ubuntu@${FRONTEND_IP} "
+                            ssh ubuntu@${BACKEND_IP} '
+                                sudo apt update -y
+                                sudo apt install -y docker.io awscli
+                                aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
+                                sudo docker stop backend || true
+                                sudo docker rm backend || true
+                                sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
+                            '
+                        "
+                    """
                 }
-            }
-
-            echo "Frontend IP: ${FRONTEND_IP}"
-            echo "Backend IP: ${BACKEND_IP}"
-            echo "ECR Repo: ${ECR_REPO}"
-
-            // Deploy with SSH
-            sshagent(credentials: ['bastion-ssh-main.pem']) {
-                bat """
-                    plink -ssh -i "%SSH_KEY%" ubuntu@${FRONTEND_IP} "
-                        ssh ubuntu@${BACKEND_IP} '
-                            sudo apt update -y
-                            sudo apt install -y docker.io awscli
-                            aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
-                            sudo docker stop backend || true
-                            sudo docker rm backend || true
-                            sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
-                        '
-                    "
+            } catch (Exception e) {
+                echo "Native SSH failed, trying PowerShell method..."
+                
+                // Method 2: PowerShell fallback
+                powershell """
+                    \$keyContent = Get-Content -Path "${env.SSH_KEY}" -Raw
+                    \$keyFile = "C:\\temp\\ssh_key.pem"
+                    \$keyContent | Out-File -FilePath \$keyFile -Encoding ASCII
+                    
+                    # Fix permissions
+                    icacls \$keyFile /inheritance:r
+                    icacls \$keyFile /grant:r "Administrators:(F)"
+                    icacls \$keyFile /grant:r "SYSTEM:(F)"
+                    
+                    # Connect via SSH
+                    & {
+                        \$ErrorActionPreference = 'Stop'
+                        ssh -i \$keyFile -o StrictHostKeyChecking=no ubuntu@${FRONTEND_IP} "
+                            ssh ubuntu@${BACKEND_IP} '
+                                sudo apt update -y
+                                sudo apt install -y docker.io awscli
+                                aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
+                                sudo docker stop backend || true
+                                sudo docker rm backend || true
+                                sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
+                            '
+                        "
+                    }
                 """
             }
         }
