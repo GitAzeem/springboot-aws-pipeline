@@ -38,24 +38,24 @@ pipeline {
       stage('Build and Push Docker Image to ECR') {
     steps {
         script {
-            // Get ECR repo URL with FULL credential specification
+            // Get ECR repo URL with explicit credential passing
             def ECR_REPO = ''
             dir('terraform') {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-creds-backup',
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY',
-                    tokenVariable: 'AWS_SESSION_TOKEN'
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
                     withEnv([
-                        "AWS_DEFAULT_REGION=${AWS_REGION}",
-                        "AWS_REGION=${AWS_REGION}"
+                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
+                        "AWS_DEFAULT_REGION=${AWS_REGION}"
                     ]) {
-                        // First refresh Terraform state
+                        // First refresh the Terraform state to ensure it's current
                         bat 'terraform refresh'
                         
-                        // Then get output
+                        // Then get the output with explicit AWS credentials
                         ECR_REPO = bat(
                             script: 'terraform output -raw ecr_repository_url',
                             returnStdout: true
@@ -64,9 +64,9 @@ pipeline {
                 }
             }
 
-            echo "Confirmed ECR URL: ${ECR_REPO}"
-
-            // Build and push with same credentials
+            echo "Using ECR Repository: ${ECR_REPO}"
+            
+            // Build and push the Docker image
             withCredentials([[
                 $class: 'AmazonWebServicesCredentialsBinding',
                 credentialsId: 'aws-creds-backup'
