@@ -6,11 +6,6 @@ pipeline {
         IMAGE_TAG = "v${env.BUILD_NUMBER}"
     }
 
-    // Declare shared variables
-    def FRONTEND_IP = ''
-    def BACKEND_IP = ''
-    def ECR_REPO = ''
-
     stages {
 
         stage('Checkout Code') {
@@ -31,22 +26,20 @@ pipeline {
             steps {
                 dir('terraform') {
                     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                        withEnv([
-                            "AWS_DEFAULT_REGION=${AWS_REGION}"
-                        ]) {
+                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
                             bat 'terraform init'
                             bat 'terraform apply -auto-approve'
-
-                            // Retrieve outputs once for reuse
-                            FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
-                            BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
-                            ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
-
-                            echo "Captured Outputs:"
-                            echo "FRONTEND_IP=${FRONTEND_IP}"
-                            echo "BACKEND_IP=${BACKEND_IP}"
-                            echo "ECR_REPO=${ECR_REPO}"
                         }
+                    }
+                    script {
+                        env.FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
+                        env.BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
+                        env.ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
+
+                        echo "Captured Outputs:"
+                        echo "FRONTEND_IP=${env.FRONTEND_IP}"
+                        echo "BACKEND_IP=${env.BACKEND_IP}"
+                        echo "ECR_REPO=${env.ECR_REPO}"
                     }
                 }
             }
@@ -56,13 +49,13 @@ pipeline {
             steps {
                 script {
                     bat """
-                        docker build -t ${ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
+                        docker build -t ${env.ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
                     """
                     withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
                         withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
                             bat """
-                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
-                                docker push ${ECR_REPO}:${IMAGE_TAG}
+                                aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${env.ECR_REPO}
+                                docker push ${env.ECR_REPO}:${IMAGE_TAG}
                             """
                         }
                     }
@@ -74,16 +67,16 @@ pipeline {
             steps {
                 sshagent(credentials: ['ec2-ssh']) {
                     bat """
-                        pscp -i path\\to\\private-key.ppk -r journalapp ubuntu@${FRONTEND_IP}:/home/ubuntu/
-                        plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
-                            ssh ubuntu@${BACKEND_IP} '
+                        pscp -i path\\to\\private-key.ppk -r journalapp ubuntu@${env.FRONTEND_IP}:/home/ubuntu/
+                        plink -i path\\to\\private-key.ppk ubuntu@${env.FRONTEND_IP} "
+                            ssh ubuntu@${env.BACKEND_IP} '
                                 sudo apt update
                                 sudo apt install -y docker.io awscli
-                                aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}
-                                sudo docker pull ${ECR_REPO}:${IMAGE_TAG}
+                                aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${env.ECR_REPO}
+                                sudo docker pull ${env.ECR_REPO}:${IMAGE_TAG}
                                 sudo docker stop backend || true
                                 sudo docker rm backend || true
-                                sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}
+                                sudo docker run -d --name backend -p 9090:9090 ${env.ECR_REPO}:${IMAGE_TAG}
                             '
                         "
                     """
@@ -95,13 +88,13 @@ pipeline {
             steps {
                 script {
                     bat """
-                        powershell -Command "(Get-Content frontend\\index.html) -replace 'http://localhost:9090', 'http://${BACKEND_IP}:9090' | Set-Content frontend\\index.html"
+                        powershell -Command "(Get-Content frontend\\index.html) -replace 'http://localhost:9090', 'http://${env.BACKEND_IP}:9090' | Set-Content frontend\\index.html"
                     """
                 }
                 sshagent(credentials: ['ec2-ssh']) {
                     bat """
-                        pscp -i path\\to\\private-key.ppk frontend\\index.html ubuntu@${FRONTEND_IP}:/home/ubuntu/index.html
-                        plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
+                        pscp -i path\\to\\private-key.ppk frontend\\index.html ubuntu@${env.FRONTEND_IP}:/home/ubuntu/index.html
+                        plink -i path\\to\\private-key.ppk ubuntu@${env.FRONTEND_IP} "
                             sudo apt update
                             sudo apt install -y nginx
                             sudo mv /home/ubuntu/index.html /var/www/html/index.html
