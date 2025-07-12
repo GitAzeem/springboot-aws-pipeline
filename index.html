@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Project List</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+        }
+        button {
+            padding: 10px 15px;
+            font-size: 16px;
+        }
+        .project-block {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 10px 0;
+            background-color: #f9f9f9;
+        }
+        .project-block p {
+            margin: 4px 0;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Project List</h1>
+<button id="loadProjectsBtn">Load Projects</button>
+
+<div id="projectsContainer"></div>
+
+<script>
+document.getElementById('loadProjectsBtn').addEventListener('click', () => {
+    fetch('http://localhost:9090/project/all')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Network response was not OK');
+            }
+            return response.json();
+        })
+        .then(data => {
+            const container = document.getElementById('projectsContainer');
+            container.innerHTML = ''; // Clear previous results
+
+            data.forEach(project => {
+                const block = document.createElement('div');
+                block.className = 'project-block';
+
+                block.innerHTML = `
+                    <p><strong>PID:</strong> ${project.pid || ''}</p>
+                    <p><strong>Project Name:</strong> ${project.pname || ''}</p>
+                    <p><strong>Skills:</strong> ${(project.skills || []).join(', ')}</p>
+                    <p><strong>Field:</strong> ${project.pfield || ''}</p>
+                    <p><strong>Purpose:</strong> ${project.p_purpose || ''}</p>
+                    <p><strong>Team Size:</strong> ${project.teamSize || ''}</p>
+                    <p><strong>Sponsors:</strong> ${(project.sponsors || []).join(', ')}</p>
+                    <p><strong>Owner:</strong> ${project.owner || ''}</p>
+                    <p><strong>Contributors (IDs):</strong> ${(project.contributor || []).join(', ')}</p>
+                    <p><strong>Contributors (Names):</strong> ${(project.contributornames || []).join(', ')}</p>
+                `;
+                container.appendChild(block);
+            });
+        })
+        .catch(error => {
+            console.error('Fetch error:', error);
+            alert('Error fetching projects. Check console for details.');
+        });
+});
+</script>
+
+</body>
+</html>
