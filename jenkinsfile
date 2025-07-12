@@ -38,27 +38,42 @@ pipeline {
       stage('Build and Push Docker Image to ECR') {
     steps {
         script {
-            // Debug: Show raw terraform output
-            echo "Getting ECR URL..."
-            def rawOutput = bat(
-                script: 'cd terraform && terraform output',
-                returnStdout: true
-            )
-            echo "Raw terraform output:\n${rawOutput}"
+            // 1. First get the ECR repository URL with proper credentials
+            def ECR_REPO = ''
+            dir('terraform') {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds-backup',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
+                        "AWS_DEFAULT_REGION=${AWS_REGION}"
+                    ]) {
+                        // Refresh Terraform state to ensure it's current
+                        bat 'terraform refresh'
+                        
+                        // Get just the repository URL
+                        ECR_REPO = bat(
+                            script: 'terraform output -raw ecr_repository_url',
+                            returnStdout: true
+                        ).trim()
+                        
+                        // Clean any command artifacts from output
+                        ECR_REPO = ECR_REPO.readLines().last()
+                    }
+                }
+            }
+
+            echo "Using ECR Repository: ${ECR_REPO}"
             
-            // Get clean ECR URL
-            def ECR_REPO = bat(
-                script: 'cd terraform && terraform output -raw ecr_repository_url',
-                returnStdout: true
-            ).trim().readLines().last()
-            echo "Clean ECR URL: |${ECR_REPO}|"
-            
-            // Verify AWS credentials
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                bat 'aws sts get-caller-identity'
-                bat "aws ecr describe-repositories --repository-names ${ECR_REPO.split('/').last()} --region ${AWS_REGION}"
-                
-                // Build and push
+            // 2. Build and push Docker image with same credentials
+            withCredentials([[
+                $class: 'AmazonWebServicesCredentialsBinding',
+                credentialsId: 'aws-creds-backup'
+            ]]) {
                 bat """
                     docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
                     aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
