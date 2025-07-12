@@ -36,40 +36,33 @@ pipeline {
         }
 
       stage('Build and Push Docker Image to ECR') {
-        steps {
-            script {
-                // First get the ECR repository URL
-                def ECR_REPO = ''
-                dir('terraform') {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                            ECR_REPO = bat(
-                                script: 'terraform output -raw ecr_repository_url',
-                                returnStdout: true
-                            ).trim()
-                        }
-                    }
-                }
-                
-                // Debug output to verify the ECR_REPO value
-                echo "ECR Repository URL: ${ECR_REPO}"
-                
-                // Build the Docker image
-                bat """
-                    docker build -t ${ECR_REPO}:${IMAGE_TAG} -f ./journalapp/Dockerfile ./journalapp
-                """
-                
-                // Push to ECR
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                    withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                        bat """
-                            aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
-                            docker push ${ECR_REPO}:${IMAGE_TAG}
-                        """
-                    }
+    steps {
+        script {
+            // First get the ECR repository URL
+            def ECR_REPO = bat(
+                script: 'cd terraform && terraform output -raw ecr_repository_url',
+                returnStdout: true
+            ).trim()
+            
+            // Debug output to verify the ECR_REPO value
+            echo "ECR Repository URL: ${ECR_REPO}"
+            
+            // Build the Docker image
+            bat """
+                docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
+            """
+            
+            // Push to ECR
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                    bat """
+                        aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+                        docker push "${ECR_REPO}:${IMAGE_TAG}"
+                    """
                 }
             }
         }
+    }
 }
         stage('Deploy Backend to Private EC2') {
             steps {
