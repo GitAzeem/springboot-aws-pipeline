@@ -38,25 +38,19 @@ pipeline {
       stage('Build and Push Docker Image to ECR') {
     steps {
         script {
-            // Get ECR repository URL with proper AWS credentials
-            def ECR_REPO = ''
-            dir('terraform') {
-                withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', 
-                               credentialsId: 'aws-creds-backup',
-                               accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                               secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']]) {
-                    withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                        ECR_REPO = bat(
-                            script: 'terraform output -raw ecr_repository_url',
-                            returnStdout: true
-                        ).trim()
-                    }
-                }
-            }
-
-            echo "ECR Repository URL: ${ECR_REPO}"
+            // First get the ECR repository URL
+            def ECR_REPO = bat(
+                script: 'cd terraform && terraform output -raw ecr_repository_url',
+                returnStdout: true
+            ).trim()
             
-            // Build Docker image
+            // Clean any extra output from the command
+            ECR_REPO = ECR_REPO.replaceAll(/^.*?(\d+\.dkr\.ecr\.).*$/ , '$1')
+            ECR_REPO = ECR_REPO.readLines().last().trim()
+            
+            echo "Using ECR Repository: ${ECR_REPO}"
+            
+            // Build the Docker image
             bat """
                 docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
             """
