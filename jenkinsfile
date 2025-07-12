@@ -38,35 +38,17 @@ pipeline {
       stage('Build and Push Docker Image to ECR') {
     steps {
         script {
-            // Get ECR repo URL with explicit credential passing
-            def ECR_REPO = ''
-            dir('terraform') {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-creds-backup',
-                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                ]]) {
-                    withEnv([
-                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
-                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
-                        "AWS_DEFAULT_REGION=${AWS_REGION}"
-                    ]) {
-                        // First refresh the Terraform state to ensure it's current
-                        bat 'terraform refresh'
-                        
-                        // Then get the output with explicit AWS credentials
-                        ECR_REPO = bat(
-                            script: 'terraform output -raw ecr_repository_url',
-                            returnStdout: true
-                        ).trim()
-                    }
-                }
-            }
-
-            echo "Using ECR Repository: ${ECR_REPO}"
+            // 1. First get just the ECR repo URL
+            def ECR_REPO = bat(
+                script: 'cd terraform && terraform output -raw ecr_repository_url',
+                returnStdout: true
+            ).trim()
             
-            // Build and push the Docker image
+            // Clean any command artifacts from the output
+            ECR_REPO = ECR_REPO.readLines().last().trim()
+            echo "Clean ECR URL: ${ECR_REPO}"
+
+            // 2. Build and push with proper formatting
             withCredentials([[
                 $class: 'AmazonWebServicesCredentialsBinding',
                 credentialsId: 'aws-creds-backup'
