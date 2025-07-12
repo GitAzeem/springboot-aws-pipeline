@@ -38,29 +38,44 @@ pipeline {
       stage('Build and Push Docker Image to ECR') {
     steps {
         script {
-            // 1. First get ECR repo URL (using same credentials as terraform)
-            def ECR_REPO = bat(
-                script: 'cd terraform && terraform output -raw ecr_repository_url',
-                returnStdout: true
-            ).trim()
-            
-            // Debug output to verify
-            echo "ECR Repository URL: ${ECR_REPO}"
-            
-            // 2. Build and push in one credential block
+            // Get ECR repo URL with FULL credential specification
+            def ECR_REPO = ''
+            dir('terraform') {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds-backup',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY',
+                    tokenVariable: 'AWS_SESSION_TOKEN'
+                ]]) {
+                    withEnv([
+                        "AWS_DEFAULT_REGION=${AWS_REGION}",
+                        "AWS_REGION=${AWS_REGION}"
+                    ]) {
+                        // First refresh Terraform state
+                        bat 'terraform refresh'
+                        
+                        // Then get output
+                        ECR_REPO = bat(
+                            script: 'terraform output -raw ecr_repository_url',
+                            returnStdout: true
+                        ).trim()
+                    }
+                }
+            }
+
+            echo "Confirmed ECR URL: ${ECR_REPO}"
+
+            // Build and push with same credentials
             withCredentials([[
                 $class: 'AmazonWebServicesCredentialsBinding',
-                credentialsId: 'aws-creds-backup',
-                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                credentialsId: 'aws-creds-backup'
             ]]) {
-                withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                    bat """
-                        docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
-                        aws ecr get-login-password | docker login --username AWS --password-stdin ${ECR_REPO}
-                        docker push "${ECR_REPO}:${IMAGE_TAG}"
-                    """
-                }
+                bat """
+                    docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
+                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
+                    docker push "${ECR_REPO}:${IMAGE_TAG}"
+                """
             }
         }
     }
