@@ -22,33 +22,18 @@ pipeline {
             }
         }
 
-  stage('Provision Infrastructure with Terraform') {
-    steps {
-        dir('terraform') {
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                withEnv([
-                    "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
-                    "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
-                    "AWS_SESSION_TOKEN=${env.AWS_SESSION_TOKEN}",
-                    "AWS_DEFAULT_REGION=${AWS_REGION}"
-                ]) {
-                    bat 'terraform init'
-                    bat 'terraform apply -auto-approve'
+        stage('Provision Infrastructure with Terraform') {
+            steps {
+                dir('terraform') {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
+                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
+                            bat 'terraform init'
+                            bat 'terraform apply -auto-approve'
+                        }
+                    }
                 }
             }
-            script {
-                env.FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
-                env.BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
-                env.ECR_REPO = bat(script: 'terraform output -raw ecr_repository_url', returnStdout: true).trim()
-
-                echo "Captured Outputs:"
-                echo "FRONTEND_IP=${env.FRONTEND_IP}"
-                echo "BACKEND_IP=${env.BACKEND_IP}"
-                echo "ECR_REPO=${env.ECR_REPO}"
-            }
         }
-    }
-}
 
         stage('Build and Push Docker Image to ECR') {
             steps {
