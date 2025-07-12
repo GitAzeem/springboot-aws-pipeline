@@ -86,25 +86,50 @@ pipeline {
         stage('Deploy Backend to Private EC2') {
     steps {
         script {
-            // Get infrastructure details
-            def FRONTEND_IP = bat(
-                script: 'cd terraform && terraform output -raw frontend_public_ip', 
-                returnStdout: true
-            ).trim()
+            // Get infrastructure details with explicit AWS credentials
+            def FRONTEND_IP = ''
+            def BACKEND_IP = ''
+            def ECR_REPO = ''
             
-            def BACKEND_IP = bat(
-                script: 'cd terraform && terraform output -raw backend_private_ip',
-                returnStdout: true
-            ).trim()
-            
-            def ECR_REPO = bat(
-                script: 'cd terraform && terraform output -raw ecr_repository_url',
-                returnStdout: true
-            ).trim()
+            dir('terraform') {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds-backup',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    withEnv([
+                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
+                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
+                        "AWS_DEFAULT_REGION=${AWS_REGION}"
+                    ]) {
+                        // Refresh state first
+                        bat 'terraform refresh'
+                        
+                        // Get outputs
+                        FRONTEND_IP = bat(
+                            script: 'terraform output -raw frontend_public_ip',
+                            returnStdout: true
+                        ).trim()
+                        
+                        BACKEND_IP = bat(
+                            script: 'terraform output -raw backend_private_ip',
+                            returnStdout: true
+                        ).trim()
+                        
+                        ECR_REPO = bat(
+                            script: 'terraform output -raw ecr_repository_url',
+                            returnStdout: true
+                        ).trim()
+                    }
+                }
+            }
 
-            echo "Using Frontend: ${FRONTEND_IP} to access Backend: ${BACKEND_IP}"
-            
-            // Deploy with correct SSH credential ID
+            echo "Frontend IP: ${FRONTEND_IP}"
+            echo "Backend IP: ${BACKEND_IP}"
+            echo "ECR Repo: ${ECR_REPO}"
+
+            // Deploy with SSH
             sshagent(credentials: ['bastion-ssh-main.pem']) {
                 bat """
                     plink -ssh -i "%SSH_KEY%" ubuntu@${FRONTEND_IP} "
