@@ -93,12 +93,7 @@ pipeline {
                 secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
             ]]) {
                 withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                    // Get outputs from Terraform using bat
-                    def FRONTEND_IP = bat(
-                        script: 'cd terraform && terraform output -raw frontend_public_ip',
-                        returnStdout: true
-                    ).trim()
-                    
+                    // Get outputs from Terraform
                     def BACKEND_IP = bat(
                         script: 'cd terraform && terraform output -raw backend_private_ip',
                         returnStdout: true
@@ -109,35 +104,28 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    echo "Frontend IP: ${FRONTEND_IP}"
                     echo "Backend IP: ${BACKEND_IP}"
                     echo "ECR Repo: ${ECR_REPO}"
 
-                    // Using AWS SSM as the primary method since SSH is problematic on Windows
+                    // Get instance ID using the private IP
                     def instanceId = bat(
                         script: """
                             aws ec2 describe-instances \
-                                --filters "Name=private-ip-address,Values=${BACKEND_IP}" \
+                                --filters Name=private-ip-address,Values=${BACKEND_IP} \
                                 --query "Reservations[0].Instances[0].InstanceId" \
                                 --output text
                         """,
                         returnStdout: true
                     ).trim()
-                    
+
+                    echo "Instance ID: ${instanceId}"
+
+                    // Deploy using SSM
                     bat """
                         aws ssm send-command \
                             --instance-ids ${instanceId} \
                             --document-name "AWS-RunShellScript" \
-                            --parameters '{
-                                "commands":[
-                                    "sudo apt update -y",
-                                    "sudo apt install -y docker.io awscli",
-                                    "aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}",
-                                    "sudo docker stop backend || true",
-                                    "sudo docker rm backend || true",
-                                    "sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"
-                                ]
-                            }' \
+                            --parameters 'commands="sudo docker stop backend || true && sudo docker rm backend || true && aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO} && sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"' \
                             --region ${AWS_REGION}
                     """
                 }
