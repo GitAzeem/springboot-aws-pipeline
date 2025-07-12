@@ -9,10 +9,11 @@ pipeline {
     stages {
 
         stage('Checkout Code') {
-            steps {
-                git credentialsId: 'github-cred', url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git'
-            }
-        }
+    steps {
+        git branch: 'main', credentialsId: 'github-cred', url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git'
+    }
+}
+
 
         stage('Build Spring Boot JAR') {
             steps {
