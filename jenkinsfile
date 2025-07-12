@@ -26,7 +26,7 @@ pipeline {
         stage('Provision Infrastructure with Terraform') {
             steps {
                 dir('terraform') {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds']]) {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
                         bat 'terraform init'
                         bat 'terraform apply -auto-approve'
                     }
