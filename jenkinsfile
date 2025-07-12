@@ -9,7 +9,7 @@ pipeline {
     stages {
         stage('Checkout Code') {
             steps {
-                git credentialsId: 'github-cred', url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git'
+                git branch: 'main', credentialsId: 'github-cred', url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git'
             }
         }
 
@@ -44,6 +44,7 @@ pipeline {
                     dir('terraform') {
                         ECR_REPO = sh(script: "terraform output -raw ecr_repository_url", returnStdout: true).trim()
                     }
+                    // Assuming Dockerfile is at the root and source is in journalapp
                     dockerImage = docker.build("${ECR_REPO}:${IMAGE_TAG}", "-f Dockerfile ./journalapp")
 
                     withCredentials([usernamePassword(credentialsId: 'aws-creds', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
@@ -95,15 +96,16 @@ pipeline {
                         FRONTEND_IP = sh(script: "terraform output -raw frontend_public_ip", returnStdout: true).trim()
                         BACKEND_IP = sh(script: "terraform output -raw backend_private_ip", returnStdout: true).trim()
                     }
-                    // Replace localhost:9090 with backend private IP in index.html
+
+                    // Replace localhost in index.html with backend private IP for frontend connectivity
                     sh """
-                        sed -i 's|http://localhost:9090|http://${BACKEND_IP}:9090|g' frontend/index.html
+                        sed -i 's|http://localhost:9090|http://${BACKEND_IP}:9090|g' index.html
                     """
                 }
 
                 sshagent(credentials: ['ec2-ssh']) {
                     sh """
-                        scp -o StrictHostKeyChecking=no frontend/index.html ubuntu@${FRONTEND_IP}:/home/ubuntu/index.html
+                        scp -o StrictHostKeyChecking=no index.html ubuntu@${FRONTEND_IP}:/home/ubuntu/index.html
                         ssh -o StrictHostKeyChecking=no ubuntu@${FRONTEND_IP} '
                             sudo apt update
                             sudo apt install -y nginx
