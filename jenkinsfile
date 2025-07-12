@@ -41,7 +41,7 @@ pipeline {
                     dir('terraform') {
                         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
                             withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                                ECR_REPO = bat(
+                               def ECR_REPO = bat(
                                     script: 'terraform output -raw ecr_repository_url',
                                     returnStdout: true
                                 ).trim()
