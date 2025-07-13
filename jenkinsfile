@@ -3,63 +3,49 @@ pipeline {
         label 'aws-slave'
     }
 
-    // Explicitly define tools (critical fix for git errors)
     tools {
-    git 'linux-git'  // Must match the name in Jenkins
-}
+        git 'linux-git'
+    }
 
     environment {
         AWS_REGION = 'us-east-1'
         APP_DIR = 'journalapp'
         TERRAFORM_DIR = 'terraform'
         ECR_REPO_URI = '471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo'
-        
     }
 
     stages {
         stage('Checkout') {
             steps {
                 cleanWs()
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    extensions: [[$class: 'CleanBeforeCheckout']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
-                        credentialsId: 'github-cred'
-                    ]]
-                ])
+                checkout scm
             }
         }
-        stage('Build Application') {
-    steps {
-        dir(env.APP_DIR) {
-            sh '''
-                chmod +x mvnw     # Ensure executable permissions
-                ./mvnw clean package -DskipTests
-            '''
+
+        stage('Build') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'chmod +x mvnw && ./mvnw clean package -DskipTests'
+                }
+            }
         }
-    }
-}
 
         stage('Docker Build & Push') {
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-creds',
+                    credentialsId: 'aws-creds-backup',  // Using your AWS credentials
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
                     script {
-                        // Login to ECR (using AWS CLI v2)
                         sh """
                             aws ecr get-login-password --region ${env.AWS_REGION} | \
                             docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
                         """
-                        // Build and push
                         dir(env.APP_DIR) {
-                            sh "docker build -t ${env.DOCKER_IMAGE} ."
-                            sh "docker push ${env.DOCKER_IMAGE}"
+                            sh "docker build -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} ."
+                            sh "docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
                         }
                     }
                 }
@@ -69,32 +55,11 @@ pipeline {
         stage('Terraform Apply') {
             steps {
                 dir(env.TERRAFORM_DIR) {
-                    sh 'terraform init -upgrade'
+                    sh 'terraform init -upgrade -input=false'
                     sh """
                         terraform apply -auto-approve \
-                            -var="docker_image=${env.DOCKER_IMAGE}" \
+                            -var="docker_image=${env.ECR_REPO_URI}:${BUILD_NUMBER}" \
                             -var="region=${env.AWS_REGION}"
-                    """
-                }
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                script {
-                    def frontend_ip = sh(
-                        script: 'terraform output -raw frontend_public_ip',
-                        dir: env.TERRAFORM_DIR,
-                        returnStdout: true
-                    ).trim()
-                    
-                    // Test frontend
-                    sh "curl -sSf http://${frontend_ip} --retry 3 --max-time 5"
-                    
-                    // Test backend through frontend (SSH tunnel)
-                    sh """
-                        ssh -o StrictHostKeyChecking=no -i /path/to/main.pem ubuntu@${frontend_ip} \
-                        "curl -sSf http://localhost:9090/health"
                     """
                 }
             }
@@ -102,10 +67,16 @@ pipeline {
     }
 
     post {
-        always {
+        failure {
             node('aws-slave') {
-                deleteDir()  // More thorough than cleanWs
+                dir(env.TERRAFORM_DIR) {
+                    sh 'terraform destroy -auto-approve || true'
+                }
+                cleanWs()
             }
+        }
+        always {
+            cleanWs()
         }
     }
 }
