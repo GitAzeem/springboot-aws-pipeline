@@ -34,7 +34,7 @@ pipeline {
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-creds-backup',  // Using your AWS credentials
+                    credentialsId: 'aws-creds-backup',
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
@@ -44,8 +44,9 @@ pipeline {
                             docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
                         """
                         dir(env.APP_DIR) {
-                            sh "docker build -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} ."
-                            sh "docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
+                            // Explicitly use sudo if needed (temporary workaround)
+                            sh "sudo docker build -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} ."
+                            sh "sudo docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
                         }
                     }
                 }
