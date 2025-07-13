@@ -87,72 +87,63 @@ pipeline {
                 ]) {
                     dir(env.TERRAFORM_DIR) {
                         script {
-                            // 1. First try Terraform outputs (preferred)
-                            try {
-                                echo "Attempting to fetch IPs from Terraform outputs..."
-                                env.PUBLIC_IP = sh(
-                                    script: "terraform output -raw frontend_public_ip || echo 'NULL'",
-                                    returnStdout: true
-                                ).trim()
-                                
-                                env.BACKEND_PRIVATE_IP = sh(
-                                    script: "terraform output -raw backend_private_ip || echo 'NULL'",
-                                    returnStdout: true
-                                ).trim()
+                            // Step 1: Refresh Terraform state (critical for S3 backend)
+                            sh 'terraform refresh -auto-approve'
+                            
+                            // Step 2: Attempt to fetch IPs from Terraform outputs first
+                            echo "Trying Terraform outputs..."
+                            env.PUBLIC_IP = sh(
+                                script: "terraform output -raw frontend_public_ip || echo 'NULL'",
+                                returnStdout: true
+                            ).trim()
+                            
+                            env.BACKEND_PRIVATE_IP = sh(
+                                script: "terraform output -raw backend_private_ip || echo 'NULL'",
+                                returnStdout: true
+                            ).trim()
 
-                                // Verify outputs
-                                if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
-                                    error("Terraform outputs returned NULL values")
-                                }
+                            // Step 3: Fallback to AWS CLI if Terraform outputs fail
+                            if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
+                                echo "⚠️ Terraform outputs unavailable, using AWS CLI fallback..."
                                 
-                                echo "✅ Terraform Outputs - Public IP: ${env.PUBLIC_IP}, Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
-                                
-                            } catch (Exception e) {
-                                echo "⚠️ Terraform output method failed: ${e.getMessage()}"
-                                
-                                // 2. Fallback to AWS CLI if Terraform outputs fail
-                                echo "Falling back to AWS CLI lookup..."
-                                
-                                // Get Frontend Public IP
+                                // Fetch Frontend Public IP via AWS CLI
                                 env.PUBLIC_IP = sh(
                                     script: """
                                         aws ec2 describe-instances \
                                             --region ${env.AWS_REGION} \
-                                            --filters 'Name=tag:Name,Values=frontend' \
+                                            --filters 'Name=tag:Name,Values=frontend-server' \
                                             --query 'Reservations[].Instances[].PublicIpAddress' \
                                             --output text | head -n 1 || echo 'NULL'
                                     """,
                                     returnStdout: true
                                 ).trim()
                                 
-                                // Get Backend Private IP
+                                // Fetch Backend Private IP via AWS CLI
                                 env.BACKEND_PRIVATE_IP = sh(
                                     script: """
                                         aws ec2 describe-instances \
                                             --region ${env.AWS_REGION} \
-                                            --filters 'Name=tag:Name,Values=backend' \
+                                            --filters 'Name=tag:Name,Values=backend-server' \
                                             --query 'Reservations[].Instances[].PrivateIpAddress' \
                                             --output text | head -n 1 || echo 'NULL'
                                     """,
                                     returnStdout: true
                                 ).trim()
-                                
-                                // Final validation
-                                if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
-                                    error("❌ CRITICAL: Failed to fetch IPs via both Terraform AND AWS CLI")
-                                } else {
-                                    echo "✅ AWS CLI Fallback - Public IP: ${env.PUBLIC_IP}, Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
-                                }
                             }
-                            
-                            // Write IPs to Jenkins environment (for later stages)
-                            env.PUBLIC_IP = env.PUBLIC_IP
-                            env.BACKEND_PRIVATE_IP = env.BACKEND_PRIVATE_IP
-                            
-                            // Archive IPs for debugging
-                            writeFile file: 'fetched_ips.txt', 
-                                text: "Frontend Public IP: ${env.PUBLIC_IP}\nBackend Private IP: ${env.BACKEND_PRIVATE_IP}"
-                            archiveArtifacts artifacts: 'fetched_ips.txt'
+
+                            // Step 4: Validate results
+                            if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
+                                error("❌ FATAL: Could not fetch IP addresses")
+                            } else {
+                                echo "✅ Successfully fetched IPs:"
+                                echo "Frontend Public IP: ${env.PUBLIC_IP}"
+                                echo "Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
+                                
+                                // Write to file for debugging
+                                writeFile file: 'ip_addresses.txt', 
+                                    text: "Frontend: ${env.PUBLIC_IP}\nBackend: ${env.BACKEND_PRIVATE_IP}"
+                                archiveArtifacts artifacts: 'ip_addresses.txt'
+                            }
                         }
                     }
                 }
