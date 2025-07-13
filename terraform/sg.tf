@@ -57,6 +57,13 @@ resource "aws_security_group" "private_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
+   egress {
+    from_port   = 27017  # MongoDB Atlas port
+    to_port     = 27017
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]  # Restrict to MongoDB Atlas IPs if possible
+  }
+
   tags = {
     Name = "private-sg"
   }

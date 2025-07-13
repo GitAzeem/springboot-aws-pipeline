@@ -1,166 +1,157 @@
 pipeline {
-    agent any
+    agent {
+        label 'aws-slave'
+    }
 
     environment {
         AWS_REGION = 'us-east-1'
-        IMAGE_TAG = "v${env.BUILD_NUMBER}"
+        APP_DIR = 'journalapp'
+        TERRAFORM_DIR = 'terraform'
+        ECR_REPO_URI = '471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo'
+        DOCKER_IMAGE = ''
     }
 
     stages {
-
+        // STAGE 1: Checkout from GitHub
         stage('Checkout Code') {
             steps {
-                git branch: 'main', credentialsId: 'github-cred', url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git'
-            }
-        }
-
-        stage('Build Spring Boot JAR') {
-            steps {
-                dir('journalapp') {
-                    bat 'mvnw.cmd clean package -DskipTests'
-                }
-            }
-        }
-
-        stage('Provision Infrastructure with Terraform') {
-            steps {
-                dir('terraform') {
-                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                        withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                            bat 'terraform init'
-                            bat 'terraform apply -auto-approve'
-                        }
-                    }
-                }
-            }
-        }
-
-      stage('Build and Push Docker Image to ECR') {
-    steps {
-        script {
-            // 1. First get the ECR repository URL with proper credentials
-            def ECR_REPO = ''
-            dir('terraform') {
-                withCredentials([[
-                    $class: 'AmazonWebServicesCredentialsBinding',
-                    credentialsId: 'aws-creds-backup',
-                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-                ]]) {
-                    withEnv([
-                        "AWS_ACCESS_KEY_ID=${env.AWS_ACCESS_KEY_ID}",
-                        "AWS_SECRET_ACCESS_KEY=${env.AWS_SECRET_ACCESS_KEY}",
-                        "AWS_DEFAULT_REGION=${AWS_REGION}"
-                    ]) {
-                        // Refresh Terraform state to ensure it's current
-                        bat 'terraform refresh'
-                        
-                        // Get just the repository URL
-                        ECR_REPO = bat(
-                            script: 'terraform output -raw ecr_repository_url',
-                            returnStdout: true
-                        ).trim()
-                        
-                        // Clean any command artifacts from output
-                        ECR_REPO = ECR_REPO.readLines().last()
-                    }
-                }
-            }
-
-            echo "Using ECR Repository: ${ECR_REPO}"
-            
-            // 2. Build and push Docker image with same credentials
-            withCredentials([[
-                $class: 'AmazonWebServicesCredentialsBinding',
-                credentialsId: 'aws-creds-backup'
-            ]]) {
-                bat """
-                    docker build -t "${ECR_REPO}:${IMAGE_TAG}" -f ./journalapp/Dockerfile ./journalapp
-                    aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REPO}
-                    docker push "${ECR_REPO}:${IMAGE_TAG}"
-                """
-            }
-        }
-    }
-}
-       stage('Deploy Backend to Private EC2') {
-    steps {
-        script {
-            withCredentials([[
-                $class: 'AmazonWebServicesCredentialsBinding',
-                credentialsId: 'aws-creds-backup',
-                accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
-            ]]) {
-                withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                    // Get outputs from Terraform
-                    def BACKEND_IP = bat(
-                        script: 'cd terraform && terraform output -raw backend_private_ip',
-                        returnStdout: true
-                    ).trim()
-                    
-                    def ECR_REPO = bat(
-                        script: 'cd terraform && terraform output -raw ecr_repository_url',
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Backend IP: ${BACKEND_IP}"
-                    echo "ECR Repo: ${ECR_REPO}"
-
-                    // Get instance ID - fixed command
-                    def instanceId = bat(
-                        script: "aws ec2 describe-instances --filters Name=private-ip-address,Values=${BACKEND_IP} --query Reservations[0].Instances[0].InstanceId --output text",
-                        returnStdout: true
-                    ).trim()
-
-                    echo "Instance ID: ${instanceId}"
-
-                    // Deploy using SSM - fixed command
-                    bat """
-                        aws ssm send-command \
-                            --instance-ids ${instanceId} \
-                            --document-name "AWS-RunShellScript" \
-                            --parameters '{"commands":[
-                                "sudo docker stop backend || true",
-                                "sudo docker rm backend || true",
-                                "aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO}",
-                                "sudo docker run -d --name backend -p 9090:9090 ${ECR_REPO}:${IMAGE_TAG}"
-                            ]}' \
-                            --region ${AWS_REGION}
-                    """
-                }
-            }
-        }
-    }
-}
-        stage('Deploy Frontend to Public EC2') {
-            steps {
+                cleanWs()
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
+                        credentialsId: 'github-cred'
+                    ]]
+                ])
                 script {
-                    dir('terraform') {
-                        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-creds-backup']]) {
-                            withEnv(["AWS_DEFAULT_REGION=${AWS_REGION}"]) {
-                                FRONTEND_IP = bat(script: 'terraform output -raw frontend_public_ip', returnStdout: true).trim()
-                                BACKEND_IP = bat(script: 'terraform output -raw backend_private_ip', returnStdout: true).trim()
-                            }
+                    COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    env.DOCKER_IMAGE = "${env.ECR_REPO_URI}:${COMMIT_HASH}-${BUILD_NUMBER}"
+                }
+            }
+        }
+
+        // STAGE 2: Build Spring Boot
+        stage('Build Application') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh './mvnw clean package -DskipTests'
+                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
+                }
+            }
+        }
+
+        // STAGE 3: Docker Operations
+        stage('Containerize') {
+            steps {
+                withCredentials([aws(credentialsId: 'aws-creds')]) {
+                    script {
+                        // Login to ECR
+                        sh """
+                            aws ecr get-login-password --region ${env.AWS_REGION} | \
+                            docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
+                        """
+
+                        // Build and push Docker image
+                        dir(env.APP_DIR) {
+                            sh "docker build -t ${env.DOCKER_IMAGE} ."
+                            sh "docker push ${env.DOCKER_IMAGE}"
                         }
                     }
+                }
+            }
+        }
 
-                    bat """
-                        powershell -Command "(Get-Content frontend\\index.html) -replace 'http://localhost:9090', 'http://${BACKEND_IP}:9090' | Set-Content frontend\\index.html"
-                    """
-
-                    sshagent(credentials: ['ec2-ssh']) {
-                        bat """
-                            pscp -i path\\to\\private-key.ppk frontend\\index.html ubuntu@${FRONTEND_IP}:/home/ubuntu/index.html
-                            plink -i path\\to\\private-key.ppk ubuntu@${FRONTEND_IP} "
-                                sudo apt update
-                                sudo apt install -y nginx
-                                sudo mv /home/ubuntu/index.html /var/www/html/index.html
-                                sudo systemctl restart nginx
-                            "
+        // STAGE 4: Terraform Deploy
+        stage('Provision Infrastructure') {
+            steps {
+                dir(env.TERRAFORM_DIR) {
+                    withCredentials([aws(credentialsId: 'aws-creds')]) {
+                        sh 'terraform init -upgrade'
+                        sh """
+                            terraform apply -auto-approve \
+                                -var="docker_image=${env.DOCKER_IMAGE}" \
+                                -var="region=${env.AWS_REGION}" \
+                                -var="instance_type=t3.small" \
+                                -var="key_name=main"
                         """
                     }
                 }
+            }
+        }
+
+        // STAGE 5: Deployment Verification
+        stage('Verify Deployment') {
+            steps {
+                script {
+                    def FRONTEND_IP = sh(
+                        script: 'terraform output -raw frontend_public_ip',
+                        dir: env.TERRAFORM_DIR,
+                        returnStdout: true
+                    ).trim()
+
+                    def BACKEND_IP = sh(
+                        script: 'terraform output -raw backend_private_ip',
+                        dir: env.TERRAFORM_DIR,
+                        returnStdout: true
+                    ).trim()
+
+                    // Test frontend (nginx)
+                    sh "curl -sSf http://${FRONTEND_IP} --retry 3 --retry-delay 5"
+                    
+                    // Test backend (Spring Boot via private IP)
+                    sh """
+                        ssh -o StrictHostKeyChecking=no -i /path/to/main.pem ubuntu@${FRONTEND_IP} \
+                        "curl -sSf http://${BACKEND_IP}:9090/health --retry 3"
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            script {
+                // Clean up Docker images to save space
+                sh 'docker system prune -af || true'
+                
+                // Archive Terraform output
+                dir(env.TERRAFORM_DIR) {
+                    archiveArtifacts artifacts: '*.tfstate*', allowEmptyArchive: true
+                }
+            }
+        }
+        failure {
+            script {
+                echo "Initiating rollback procedures..."
+                dir(env.TERRAFORM_DIR) {
+                    // Only destroy if resources were created
+                    if (fileExists('terraform.tfstate') && 
+                        sh(script: 'terraform state list | wc -l', returnStdout: true).trim().toInteger() > 0) {
+                        sh 'terraform destroy -auto-approve'
+                    }
+                }
+                emailext body: "Pipeline failed in stage ${currentBuild.currentResult}\nBuild URL: ${BUILD_URL}",
+                      subject: "FAILED: ${env.JOB_NAME} - Build ${env.BUILD_NUMBER}",
+                      to: 'your-email@example.com'
+            }
+        }
+        success {
+            script {
+                def FRONTEND_URL = sh(
+                    script: 'terraform output -raw frontend_public_ip',
+                    dir: env.TERRAFORM_DIR,
+                    returnStdout: true
+                ).trim()
+                
+                emailext body: """
+                    Pipeline succeeded!
+                    Frontend URL: http://${FRONTEND_URL}
+                    Deployed image: ${env.DOCKER_IMAGE}
+                    Build URL: ${BUILD_URL}
+                """,
+                subject: "SUCCESS: ${env.JOB_NAME} - Build ${env.BUILD_NUMBER}",
+                to: 'your-email@example.com'
             }
         }
     }

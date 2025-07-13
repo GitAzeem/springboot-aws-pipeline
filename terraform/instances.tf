@@ -32,6 +32,15 @@ resource "aws_instance" "backend_instance" {
               apt-get install -y docker.io
               systemctl start docker
               systemctl enable docker
+              
+              # Add AWS ECR login
+              aws ecr get-login-password --region ${var.region} | \
+                docker login --username AWS --password-stdin ${var.docker_image.split("/")[0]}
+              
+              # Run the container
+              docker run -d -p 9090:8080 \
+                --name springboot-app \
+                ${var.docker_image}
               EOF
 
   tags = {

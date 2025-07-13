@@ -26,3 +26,9 @@ variable "key_name" {
   description = "main"
   default = "main"
 }
+
+
+variable "docker_image" {
+  description = "ECR image URI for container deployment"
+  type        = string
+}
