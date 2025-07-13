@@ -42,6 +42,14 @@ resource "aws_security_group" "private_sg" {
     cidr_blocks = [var.public_subnet_cidr]
   }
 
+  # Allow app port 9090 from public subnet (frontend)
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [var.public_subnet_cidr]
+  }
+
   # Allow SSH from public subnet only (bastion access)
   ingress {
     from_port   = 22

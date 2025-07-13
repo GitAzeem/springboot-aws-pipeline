@@ -10,10 +10,14 @@ resource "aws_instance" "frontend_instance" {
               #!/bin/bash
               apt-get update -y
               apt-get install -y nginx
-              echo '<html><body><h1>Frontend Running</h1></body></html>' > /var/www/html/index.html
+              
+              # Replace localhost with backend private IP in index.html
+              sed -i "s|http://localhost:9090|http://${aws_instance.backend_instance.private_ip}:9090|g" /var/www/html/index.html
+              
+              # Copy our custom index.html
+              echo '${file("index.html")}' > /var/www/html/index.html
               systemctl restart nginx
               EOF
-
   tags = {
     Name = "frontend-server"
   }
@@ -28,20 +32,36 @@ resource "aws_instance" "backend_instance" {
 
   user_data = <<-EOF
               #!/bin/bash
+              set -e
+
+              # Update and install Docker and AWS CLI
               apt-get update -y
               apt-get install -y docker.io awscli
+
               systemctl start docker
               systemctl enable docker
+
+              # Add ubuntu user to docker group to avoid permission issues
+              usermod -aG docker ubuntu
+
+              # Wait for group membership to refresh
+              newgrp docker <<EONG
               
-              # Add AWS ECR login (using Terraform variable interpolation)
+              # ECR login
               aws ecr get-login-password --region ${var.region} | \
                 docker login --username AWS --password-stdin ${split("/", var.docker_image)[0]}
-              
-              # Run the container (proper escaping for Terraform)
-              docker run -d -p 9090:8080 \
+
+              # Pull the image first to avoid auto-restart delays
+              docker pull ${var.docker_image}
+
+              # Run the container
+              nohup docker run -d -p 9090:8080 \
                 --name springboot-app \
-                ${var.docker_image}
+                ${var.docker_image} > /var/log/springboot-app.log 2>&1 &
+              
+              EONG
               EOF
+
   tags = {
     Name = "backend-server"
   }
