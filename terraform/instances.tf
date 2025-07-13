@@ -10,12 +10,6 @@ resource "aws_instance" "frontend_instance" {
               #!/bin/bash
               apt-get update -y
               apt-get install -y nginx
-              
-              # Replace localhost with backend private IP in index.html
-              sed -i "s|http://localhost:9090|http://${aws_instance.backend_instance.private_ip}:9090|g" /var/www/html/index.html
-              
-              # Copy our custom index.html
-              echo '${file("index.html")}' > /var/www/html/index.html
               systemctl restart nginx
               EOF
   tags = {

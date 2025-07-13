@@ -80,6 +80,39 @@ pipeline {
             }
         }
 
+        stage('Fetch Public IP') {
+            steps {
+                dir(env.TERRAFORM_DIR) {
+                    script {
+                        PUBLIC_IP = sh(
+                            script: "terraform output -raw frontend_public_ip",
+                            returnStdout: true
+                        ).trim()
+                        echo "Fetched Public IP: ${PUBLIC_IP}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy index.html to EC2') {
+            steps {
+                sshagent(['bastion-ssh-main.pem']) { // replace with your Jenkins SSH credential ID
+                    sh """
+                        echo "Copying index.html to EC2..."
+                        scp -o StrictHostKeyChecking=no index.html ubuntu@${PUBLIC_IP}:/tmp/index.html
+
+                        echo "Configuring Nginx on EC2..."
+                        ssh -o StrictHostKeyChecking=no ubuntu@${PUBLIC_IP} '
+                            sudo mv /tmp/index.html /var/www/html/index.html
+                            sudo systemctl restart nginx
+                        '
+                    """
+                }
+            }
+        }
+
+
+
     }
 
     post {
