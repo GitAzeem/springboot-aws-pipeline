@@ -3,6 +3,10 @@ pipeline {
         label 'aws-slave'
     }
 
+    tools {
+        git 'Default'  // This matches the name in Global Tools
+    }
+
     environment {
         AWS_REGION = 'us-east-1'
         APP_DIR = 'journalapp'
