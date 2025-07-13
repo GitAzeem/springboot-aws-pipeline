@@ -82,13 +82,20 @@ pipeline {
 
         stage('Fetch Public IP') {
             steps {
-                dir(env.TERRAFORM_DIR) {
-                    script {
-                        PUBLIC_IP = sh(
-                            script: "terraform output -raw frontend_public_ip",
-                            returnStdout: true
-                        ).trim()
-                        echo "Fetched Public IP: ${PUBLIC_IP}"
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds-backup',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    dir(env.TERRAFORM_DIR) {
+                        script {
+                            PUBLIC_IP = sh(
+                                script: "terraform output -raw frontend_public_ip",
+                                returnStdout: true
+                            ).trim()
+                            echo "Fetched Public IP: ${PUBLIC_IP}"
+                        }
                     }
                 }
             }
