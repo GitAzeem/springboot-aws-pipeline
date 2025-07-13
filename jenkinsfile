@@ -12,10 +12,9 @@ pipeline {
         APP_DIR = 'journalapp'
         TERRAFORM_DIR = 'terraform'
         ECR_REPO_URI = '471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo'
-        
+        PUBLIC_IP = ''
+        BACKEND_PRIVATE_IP = ''
     }
-    def PUBLIC_IP = ""
-    def BACKEND_PRIVATE_IP = ""
 
     stages {
         stage('Checkout') {
@@ -35,28 +34,23 @@ pipeline {
 
         stage('Docker Build & Push') {
             steps {
-                withCredentials([[
+                withCredentials([[ 
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-creds-backup',
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
                     script {
-                        // 1. Login to ECR
                         sh """
                             aws ecr get-login-password --region ${env.AWS_REGION} | \
                             docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
                         """
-                        
-                        // 2. Build with BuildKit (modern builder)
                         dir(env.APP_DIR) {
                             sh """
                                 docker build \
                                     -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} .
                             """
                         }
-                        
-                        // 3. Push the image
                         sh "docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
                     }
                 }
@@ -65,7 +59,7 @@ pipeline {
 
         stage('Terraform Apply') {
             steps {
-                withCredentials([[
+                withCredentials([[ 
                     $class: 'AmazonWebServicesCredentialsBinding',
                     credentialsId: 'aws-creds-backup',
                     accessKeyVariable: 'AWS_ACCESS_KEY_ID',
@@ -93,29 +87,27 @@ pipeline {
                 ]]) {
                     dir(env.TERRAFORM_DIR) {
                         script {
-                            PUBLIC_IP = sh(
+                            env.PUBLIC_IP = sh(
                                 script: "terraform output -raw frontend_public_ip",
                                 returnStdout: true
                             ).trim()
-                            echo "Fetched Public IP: ${PUBLIC_IP}"
+                            echo "Fetched Public IP: ${env.PUBLIC_IP}"
 
-                            BACKEND_PRIVATE_IP = sh(
+                            env.BACKEND_PRIVATE_IP = sh(
                                 script: "terraform output -raw backend_private_ip",
                                 returnStdout: true
                             ).trim()
-                            echo "Fetched Backend Private IP: ${BACKEND_PRIVATE_IP}"
+                            echo "Fetched Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
                         }
                     }
                 }
             }
         }
 
-
         stage('Deploy Frontend & Configure Nginx Reverse Proxy') {
             steps {
-                sshagent(['bastion-ssh-main.pem']) { // your Jenkins SSH credential ID
+                sshagent(['bastion-ssh-main.pem']) {
                     script {
-                        // Write Nginx configuration for reverse proxy
                         writeFile file: 'nginx.conf', text: """
         server {
             listen 80;
@@ -126,20 +118,20 @@ pipeline {
             }
 
             location /project/ {
-                proxy_pass http://${BACKEND_PRIVATE_IP}:9090/project/;
+                proxy_pass http://${env.BACKEND_PRIVATE_IP}:9090/project/;
                 proxy_set_header Host \$host;
                 proxy_set_header X-Real-IP \$remote_addr;
             }
         }
-        """
+                        """
 
                         sh """
                             echo "Copying index.html and nginx.conf to EC2..."
-                            scp -o StrictHostKeyChecking=no index.html ubuntu@${PUBLIC_IP}:/tmp/index.html
-                            scp -o StrictHostKeyChecking=no nginx.conf ubuntu@${PUBLIC_IP}:/tmp/nginx.conf
+                            scp -o StrictHostKeyChecking=no index.html ubuntu@${env.PUBLIC_IP}:/tmp/index.html
+                            scp -o StrictHostKeyChecking=no nginx.conf ubuntu@${env.PUBLIC_IP}:/tmp/nginx.conf
 
                             echo "Configuring Nginx on EC2..."
-                            ssh -o StrictHostKeyChecking=no ubuntu@${PUBLIC_IP} '
+                            ssh -o StrictHostKeyChecking=no ubuntu@${env.PUBLIC_IP} '
                                 sudo mv /tmp/index.html /var/www/html/index.html
                                 sudo mv /tmp/nginx.conf /etc/nginx/sites-available/default
                                 sudo nginx -t && sudo systemctl reload nginx
@@ -149,7 +141,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Deploy Backend Container') {
             steps {
@@ -164,13 +155,21 @@ pipeline {
                             echo "Deploying Docker container on backend EC2 via bastion..."
 
                             sh """
-                                ssh -o StrictHostKeyChecking=no ubuntu@${PUBLIC_IP} '
-                                    ssh -o StrictHostKeyChecking=no ubuntu@${BACKEND_PRIVATE_IP} "
-                                        sudo aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO_URI.split('/')[0]};
-                                        sudo docker pull ${ECR_REPO_URI}:${BUILD_NUMBER};
+                                ssh -o StrictHostKeyChecking=no ubuntu@${env.PUBLIC_IP} '
+                                    ssh -o StrictHostKeyChecking=no ubuntu@${env.BACKEND_PRIVATE_IP} "
+                                        sudo apt-get update -y;
+                                        sudo apt-get install -y docker.io unzip;
+                                        curl \\"https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip\\" -o \\"awscliv2.zip\\";
+                                        unzip awscliv2.zip;
+                                        sudo ./aws/install;
+                                        sudo systemctl start docker;
+                                        sudo systemctl enable docker;
+                                        sudo usermod -aG docker ubuntu;
+                                        sudo aws ecr get-login-password --region ${env.AWS_REGION} | sudo docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]};
+                                        sudo docker pull ${env.ECR_REPO_URI}:${BUILD_NUMBER};
                                         sudo docker stop springboot-app || true;
                                         sudo docker rm springboot-app || true;
-                                        nohup sudo docker run -d -p 9090:8080 --name springboot-app ${ECR_REPO_URI}:${BUILD_NUMBER} > /var/log/springboot-app.log 2>&1 &
+                                        nohup sudo docker run -d -p 9090:8080 --name springboot-app ${env.ECR_REPO_URI}:${BUILD_NUMBER} > /var/log/springboot-app.log 2>&1 &
                                     "
                                 '
                             """
@@ -179,11 +178,6 @@ pipeline {
                 }
             }
         }
-
-
-
-
-
     }
 
     post {
