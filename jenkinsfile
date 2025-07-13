@@ -12,8 +12,10 @@ pipeline {
         APP_DIR = 'journalapp'
         TERRAFORM_DIR = 'terraform'
         ECR_REPO_URI = '471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo'
-        BACKEND_PRIVATE_IP = ''
+        
     }
+    def PUBLIC_IP = ""
+    def BACKEND_PRIVATE_IP = ""
 
     stages {
         stage('Checkout') {
@@ -147,6 +149,37 @@ pipeline {
                 }
             }
         }
+
+
+        stage('Deploy Backend Container') {
+            steps {
+                sshagent(['bastion-ssh-main.pem']) {
+                    withCredentials([[ 
+                        $class: 'AmazonWebServicesCredentialsBinding',
+                        credentialsId: 'aws-creds-backup',
+                        accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                        secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                    ]]) {
+                        script {
+                            echo "Deploying Docker container on backend EC2 via bastion..."
+
+                            sh """
+                                ssh -o StrictHostKeyChecking=no ubuntu@${PUBLIC_IP} '
+                                    ssh -o StrictHostKeyChecking=no ubuntu@${BACKEND_PRIVATE_IP} "
+                                        sudo aws ecr get-login-password --region ${AWS_REGION} | sudo docker login --username AWS --password-stdin ${ECR_REPO_URI.split('/')[0]};
+                                        sudo docker pull ${ECR_REPO_URI}:${BUILD_NUMBER};
+                                        sudo docker stop springboot-app || true;
+                                        sudo docker rm springboot-app || true;
+                                        nohup sudo docker run -d -p 9090:8080 --name springboot-app ${ECR_REPO_URI}:${BUILD_NUMBER} > /var/log/springboot-app.log 2>&1 &
+                                    "
+                                '
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
 
 
 

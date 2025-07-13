@@ -24,50 +24,7 @@ resource "aws_instance" "backend_instance" {
   vpc_security_group_ids = [aws_security_group.private_sg.id]
   key_name               = var.key_name
 
-  user_data = <<-EOF
-              #!/bin/bash
-              set -e
-
-              # Update package lists
-              sudo apt-get update -y
-
-              # Install Docker
-              sudo apt-get install -y docker.io
-
-              # Install unzip (required for AWS CLI install)
-              sudo apt install unzip -y
-
-              # Download and install AWS CLI v2
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-              unzip awscliv2.zip
-              sudo ./aws/install
-
-              # Enable and start Docker
-              sudo systemctl start docker
-              sudo systemctl enable docker
-
-              # Add ubuntu user to docker group
-              sudo usermod -aG docker ubuntu
-
-              # Wait for group membership to refresh in the current shell
-              newgrp docker <<EONG
-
-              # AWS ECR Login
-              sudo aws ecr get-login-password --region ${var.region} | \
-                  sudo docker login --username AWS --password-stdin ${split("/", var.docker_image)[0]}
-
-              # Pull the Docker image
-              sudo docker pull ${var.docker_image}
-
-              # Run the Docker container
-              nohup sudo docker run -d -p 9090:8080 \
-                  --name springboot-app \
-                  ${var.docker_image} > /var/log/springboot-app.log 2>&1 &
-
-              EONG
-              EOF
-
-
+  
   tags = {
     Name = "backend-server"
   }
