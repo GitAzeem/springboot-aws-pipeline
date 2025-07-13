@@ -39,14 +39,16 @@ pipeline {
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
                     script {
+                        // Login as current user
                         sh """
                             aws ecr get-login-password --region ${env.AWS_REGION} | \
                             docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
                         """
+                        
+                        // Build and push without sudo
                         dir(env.APP_DIR) {
-                            // Explicitly use sudo if needed (temporary workaround)
-                            sh "sudo docker build -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} ."
-                            sh "sudo docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
+                            sh "docker build -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} ."
+                            sh "docker push ${env.ECR_REPO_URI}:${BUILD_NUMBER}"
                         }
                     }
                 }
