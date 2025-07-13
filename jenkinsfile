@@ -48,7 +48,7 @@ pipeline {
                         // 2. Build with BuildKit (modern builder)
                         dir(env.APP_DIR) {
                             sh """
-                                DOCKER_BUILDKIT=1 docker build \
+                                docker build \
                                     -t ${env.ECR_REPO_URI}:${BUILD_NUMBER} .
                             """
                         }
