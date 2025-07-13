@@ -77,79 +77,86 @@ pipeline {
             }
         }
 
+        stage('Verify Resources') {
+    steps {
+        dir(env.TERRAFORM_DIR) {
+            sh 'terraform state list'
+            sh 'terraform show'
+        }
+    }
+}
+
         stage('Fetch Public and Private IPs') {
-            steps {
-                withCredentials([
-                    [$class: 'AmazonWebServicesCredentialsBinding', 
-                    credentialsId: 'aws-creds-backup',
-                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
-                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']
-                ]) {
-                    dir(env.TERRAFORM_DIR) {
-                        script {
-                            // Step 1: Refresh Terraform state (critical for S3 backend)
-                            sh 'terraform refresh -auto-approve'
-                            
-                            // Step 2: Attempt to fetch IPs from Terraform outputs first
-                            echo "Trying Terraform outputs..."
-                            env.PUBLIC_IP = sh(
-                                script: "terraform output -raw frontend_public_ip || echo 'NULL'",
-                                returnStdout: true
-                            ).trim()
-                            
-                            env.BACKEND_PRIVATE_IP = sh(
-                                script: "terraform output -raw backend_private_ip || echo 'NULL'",
-                                returnStdout: true
-                            ).trim()
+    steps {
+        withCredentials([
+            [$class: 'AmazonWebServicesCredentialsBinding', 
+             credentialsId: 'aws-creds-backup',
+             accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+             secretKeyVariable: 'AWS_SECRET_ACCESS_KEY']
+        ]) {
+            dir(env.TERRAFORM_DIR) {
+                script {
+                    // Step 1: Initialize and refresh state (without auto-approve)
+                    sh 'terraform init -input=false'  // Ensure working with latest state
+                    sh 'terraform refresh -input=false'
+                    
+                    // Step 2: Try Terraform outputs first
+                    echo "Attempting to fetch IPs from Terraform outputs..."
+                    env.PUBLIC_IP = sh(
+                        script: "terraform output -raw frontend_public_ip 2>/dev/null || echo 'NULL'",
+                        returnStdout: true
+                    ).trim()
+                    
+                    env.BACKEND_PRIVATE_IP = sh(
+                        script: "terraform output -raw backend_private_ip 2>/dev/null || echo 'NULL'",
+                        returnStdout: true
+                    ).trim()
 
-                            // Step 3: Fallback to AWS CLI if Terraform outputs fail
-                            if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
-                                echo "⚠️ Terraform outputs unavailable, using AWS CLI fallback..."
-                                
-                                // Fetch Frontend Public IP via AWS CLI
-                                env.PUBLIC_IP = sh(
-                                    script: """
-                                        aws ec2 describe-instances \
-                                            --region ${env.AWS_REGION} \
-                                            --filters 'Name=tag:Name,Values=frontend-server' \
-                                            --query 'Reservations[].Instances[].PublicIpAddress' \
-                                            --output text | head -n 1 || echo 'NULL'
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                                
-                                // Fetch Backend Private IP via AWS CLI
-                                env.BACKEND_PRIVATE_IP = sh(
-                                    script: """
-                                        aws ec2 describe-instances \
-                                            --region ${env.AWS_REGION} \
-                                            --filters 'Name=tag:Name,Values=backend-server' \
-                                            --query 'Reservations[].Instances[].PrivateIpAddress' \
-                                            --output text | head -n 1 || echo 'NULL'
-                                    """,
-                                    returnStdout: true
-                                ).trim()
-                            }
-
-                            // Step 4: Validate results
-                            if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
-                                error("❌ FATAL: Could not fetch IP addresses")
-                            } else {
-                                echo "✅ Successfully fetched IPs:"
-                                echo "Frontend Public IP: ${env.PUBLIC_IP}"
-                                echo "Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
-                                
-                                // Write to file for debugging
-                                writeFile file: 'ip_addresses.txt', 
-                                    text: "Frontend: ${env.PUBLIC_IP}\nBackend: ${env.BACKEND_PRIVATE_IP}"
-                                archiveArtifacts artifacts: 'ip_addresses.txt'
-                            }
-                        }
+                    // Step 3: Fallback to AWS CLI if needed
+                    if (env.PUBLIC_IP == "NULL" || env.BACKEND_PRIVATE_IP == "NULL") {
+                        echo "Using AWS CLI fallback method..."
+                        
+                        // Get Frontend Public IP
+                        env.PUBLIC_IP = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                    --region ${env.AWS_REGION} \
+                                    --filters 'Name=tag:Name,Values=frontend-server' 'Name=instance-state-name,Values=running' \
+                                    --query 'Reservations[].Instances[].PublicIpAddress' \
+                                    --output text | head -n 1 || echo 'NULL'
+                            """,
+                            returnStdout: true
+                        ).trim()
+                        
+                        // Get Backend Private IP
+                        env.BACKEND_PRIVATE_IP = sh(
+                            script: """
+                                aws ec2 describe-instances \
+                                    --region ${env.AWS_REGION} \
+                                    --filters 'Name=tag:Name,Values=backend-server' 'Name=instance-state-name,Values=running' \
+                                    --query 'Reservations[].Instances[].PrivateIpAddress' \
+                                    --output text | head -n 1 || echo 'NULL'
+                            """,
+                            returnStdout: true
+                        ).trim()
                     }
+
+                    // Step 4: Validate results
+                    if (env.PUBLIC_IP == "NULL") {
+                        error("Could not determine frontend public IP")
+                    }
+                    if (env.BACKEND_PRIVATE_IP == "NULL") {
+                        error("Could not determine backend private IP")
+                    }
+                    
+                    echo "✅ Successfully fetched IP addresses:"
+                    echo "Frontend Public IP: ${env.PUBLIC_IP}"
+                    echo "Backend Private IP: ${env.BACKEND_PRIVATE_IP}"
                 }
             }
         }
-
+    }
+}
         stage('Deploy Frontend & Configure Nginx Reverse Proxy') {
             steps {
                 sshagent(['bastion-ssh-main.pem']) {
