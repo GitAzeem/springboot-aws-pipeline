@@ -5,44 +5,32 @@ pipeline {
 
     // Explicitly define tools (critical fix for git errors)
     tools {
-        git 'Default'  // Must match Jenkins Global Tool Configuration
-    }
+    git 'linux-git'  // Must match the name in Jenkins
+}
 
     environment {
         AWS_REGION = 'us-east-1'
         APP_DIR = 'journalapp'
         TERRAFORM_DIR = 'terraform'
         ECR_REPO_URI = '471112618663.dkr.ecr.us-east-1.amazonaws.com/springboot-app-repo'
-        DOCKER_IMAGE = ''
+        
     }
 
     stages {
-        stage('Checkout Code') {
+        stage('Checkout') {
             steps {
-                script {
-                    // Clean workspace and force fresh checkout
-                    cleanWs()
-                    checkout([
-                        $class: 'GitSCM',
-                        branches: [[name: '*/main']],
-                        extensions: [[
-                            $class: 'CleanBeforeCheckout'
-                        ]],
-                        userRemoteConfigs: [[
-                            url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
-                            credentialsId: 'github-cred'
-                        ]]
-                    ])
-                    // Get commit hash for image tagging
-                    COMMIT_HASH = sh(
-                        script: 'git rev-parse --short HEAD',
-                        returnStdout: true
-                    ).trim()
-                    env.DOCKER_IMAGE = "${env.ECR_REPO_URI}:${COMMIT_HASH}-${BUILD_NUMBER}"
-                }
+                cleanWs()
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    extensions: [[$class: 'CleanBeforeCheckout']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
+                        credentialsId: 'github-cred'
+                    ]]
+                ])
             }
         }
-
         stage('Build Application') {
             steps {
                 dir(env.APP_DIR) {
@@ -112,35 +100,9 @@ pipeline {
 
     post {
         always {
-            echo "Cleaning up workspace"
-            cleanWs()
-        }
-        failure {
-            script {
-                echo "Pipeline failed - initiating rollback"
-                dir(env.TERRAFORM_DIR) {
-                    // Only destroy if state exists
-                    if (fileExists('terraform.tfstate')) {
-                        sh 'terraform destroy -auto-approve'
-                    }
-                }
-                emailext body: "Pipeline failed at stage ${currentBuild.currentResult}\nView logs: ${env.BUILD_URL}",
-                      subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                      to: 'your-email@example.com'
+            node('aws-slave') {
+                deleteDir()  // More thorough than cleanWs
             }
-        }
-        success {
-            emailext body: """
-                Pipeline succeeded!\n
-                Frontend URL: http://${sh(
-                    script: 'terraform output -raw frontend_public_ip',
-                    dir: env.TERRAFORM_DIR,
-                    returnStdout: true
-                ).trim()}\n
-                Docker Image: ${env.DOCKER_IMAGE}
-            """,
-            subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-            to: 'your-email@example.com'
         }
     }
 }
