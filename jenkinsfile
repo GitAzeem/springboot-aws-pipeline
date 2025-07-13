@@ -32,12 +32,15 @@ pipeline {
             }
         }
         stage('Build Application') {
-            steps {
-                dir(env.APP_DIR) {
-                    sh './mvnw clean package -DskipTests'
-                }
-            }
+    steps {
+        dir(env.APP_DIR) {
+            sh '''
+                chmod +x mvnw     # Ensure executable permissions
+                ./mvnw clean package -DskipTests
+            '''
         }
+    }
+}
 
         stage('Docker Build & Push') {
             steps {
