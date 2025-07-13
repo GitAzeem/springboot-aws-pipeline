@@ -3,8 +3,9 @@ pipeline {
         label 'aws-slave'
     }
 
+    // Explicitly define tools (critical fix for git errors)
     tools {
-        git 'Default'  // This matches the name in Global Tools
+        git 'Default'  // Must match Jenkins Global Tool Configuration
     }
 
     environment {
@@ -16,47 +17,55 @@ pipeline {
     }
 
     stages {
-        // STAGE 1: Checkout from GitHub
         stage('Checkout Code') {
             steps {
-                cleanWs()
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
-                        credentialsId: 'github-cred'
-                    ]]
-                ])
                 script {
-                    COMMIT_HASH = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    // Clean workspace and force fresh checkout
+                    cleanWs()
+                    checkout([
+                        $class: 'GitSCM',
+                        branches: [[name: '*/main']],
+                        extensions: [[
+                            $class: 'CleanBeforeCheckout'
+                        ]],
+                        userRemoteConfigs: [[
+                            url: 'https://github.com/GitAzeem/springboot-aws-pipeline.git',
+                            credentialsId: 'github-cred'
+                        ]]
+                    ])
+                    // Get commit hash for image tagging
+                    COMMIT_HASH = sh(
+                        script: 'git rev-parse --short HEAD',
+                        returnStdout: true
+                    ).trim()
                     env.DOCKER_IMAGE = "${env.ECR_REPO_URI}:${COMMIT_HASH}-${BUILD_NUMBER}"
                 }
             }
         }
 
-        // STAGE 2: Build Spring Boot
         stage('Build Application') {
             steps {
                 dir(env.APP_DIR) {
                     sh './mvnw clean package -DskipTests'
-                    archiveArtifacts artifacts: 'target/*.jar', fingerprint: true
                 }
             }
         }
 
-        // STAGE 3: Docker Operations
-        stage('Containerize') {
+        stage('Docker Build & Push') {
             steps {
-                withCredentials([aws(credentialsId: 'aws-creds')]) {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
                     script {
-                        // Login to ECR
+                        // Login to ECR (using AWS CLI v2)
                         sh """
                             aws ecr get-login-password --region ${env.AWS_REGION} | \
                             docker login --username AWS --password-stdin ${env.ECR_REPO_URI.split('/')[0]}
                         """
-
-                        // Build and push Docker image
+                        // Build and push
                         dir(env.APP_DIR) {
                             sh "docker build -t ${env.DOCKER_IMAGE} ."
                             sh "docker push ${env.DOCKER_IMAGE}"
@@ -66,47 +75,35 @@ pipeline {
             }
         }
 
-        // STAGE 4: Terraform Deploy
-        stage('Provision Infrastructure') {
+        stage('Terraform Apply') {
             steps {
                 dir(env.TERRAFORM_DIR) {
-                    withCredentials([aws(credentialsId: 'aws-creds')]) {
-                        sh 'terraform init -upgrade'
-                        sh """
-                            terraform apply -auto-approve \
-                                -var="docker_image=${env.DOCKER_IMAGE}" \
-                                -var="region=${env.AWS_REGION}" \
-                                -var="instance_type=t3.small" \
-                                -var="key_name=main"
-                        """
-                    }
+                    sh 'terraform init -upgrade'
+                    sh """
+                        terraform apply -auto-approve \
+                            -var="docker_image=${env.DOCKER_IMAGE}" \
+                            -var="region=${env.AWS_REGION}"
+                    """
                 }
             }
         }
 
-        // STAGE 5: Deployment Verification
         stage('Verify Deployment') {
             steps {
                 script {
-                    def FRONTEND_IP = sh(
+                    def frontend_ip = sh(
                         script: 'terraform output -raw frontend_public_ip',
                         dir: env.TERRAFORM_DIR,
                         returnStdout: true
                     ).trim()
-
-                    def BACKEND_IP = sh(
-                        script: 'terraform output -raw backend_private_ip',
-                        dir: env.TERRAFORM_DIR,
-                        returnStdout: true
-                    ).trim()
-
-                    // Test frontend (nginx)
-                    sh "curl -sSf http://${FRONTEND_IP} --retry 3 --retry-delay 5"
                     
-                    // Test backend (Spring Boot via private IP)
+                    // Test frontend
+                    sh "curl -sSf http://${frontend_ip} --retry 3 --max-time 5"
+                    
+                    // Test backend through frontend (SSH tunnel)
                     sh """
-                        ssh -o StrictHostKeyChecking=no -i /path/to/main.pem ubuntu@${FRONTEND_IP} \
-                        "curl -sSf http://${BACKEND_IP}:9090/health --retry 3"
+                        ssh -o StrictHostKeyChecking=no -i /path/to/main.pem ubuntu@${frontend_ip} \
+                        "curl -sSf http://localhost:9090/health"
                     """
                 }
             }
@@ -115,48 +112,35 @@ pipeline {
 
     post {
         always {
-            script {
-                // Clean up Docker images to save space
-                sh 'docker system prune -af || true'
-                
-                // Archive Terraform output
-                dir(env.TERRAFORM_DIR) {
-                    archiveArtifacts artifacts: '*.tfstate*', allowEmptyArchive: true
-                }
-            }
+            echo "Cleaning up workspace"
+            cleanWs()
         }
         failure {
             script {
-                echo "Initiating rollback procedures..."
+                echo "Pipeline failed - initiating rollback"
                 dir(env.TERRAFORM_DIR) {
-                    // Only destroy if resources were created
-                    if (fileExists('terraform.tfstate') && 
-                        sh(script: 'terraform state list | wc -l', returnStdout: true).trim().toInteger() > 0) {
+                    // Only destroy if state exists
+                    if (fileExists('terraform.tfstate')) {
                         sh 'terraform destroy -auto-approve'
                     }
                 }
-                emailext body: "Pipeline failed in stage ${currentBuild.currentResult}\nBuild URL: ${BUILD_URL}",
-                      subject: "FAILED: ${env.JOB_NAME} - Build ${env.BUILD_NUMBER}",
+                emailext body: "Pipeline failed at stage ${currentBuild.currentResult}\nView logs: ${env.BUILD_URL}",
+                      subject: "FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                       to: 'your-email@example.com'
             }
         }
         success {
-            script {
-                def FRONTEND_URL = sh(
+            emailext body: """
+                Pipeline succeeded!\n
+                Frontend URL: http://${sh(
                     script: 'terraform output -raw frontend_public_ip',
                     dir: env.TERRAFORM_DIR,
                     returnStdout: true
-                ).trim()
-                
-                emailext body: """
-                    Pipeline succeeded!
-                    Frontend URL: http://${FRONTEND_URL}
-                    Deployed image: ${env.DOCKER_IMAGE}
-                    Build URL: ${BUILD_URL}
-                """,
-                subject: "SUCCESS: ${env.JOB_NAME} - Build ${env.BUILD_NUMBER}",
-                to: 'your-email@example.com'
-            }
+                ).trim()}\n
+                Docker Image: ${env.DOCKER_IMAGE}
+            """,
+            subject: "SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+            to: 'your-email@example.com'
         }
     }
 }

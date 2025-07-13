@@ -29,20 +29,19 @@ resource "aws_instance" "backend_instance" {
   user_data = <<-EOF
               #!/bin/bash
               apt-get update -y
-              apt-get install -y docker.io
+              apt-get install -y docker.io awscli
               systemctl start docker
               systemctl enable docker
               
-              # Add AWS ECR login
+              # Add AWS ECR login (using Terraform variable interpolation)
               aws ecr get-login-password --region ${var.region} | \
-                docker login --username AWS --password-stdin ${var.docker_image.split("/")[0]}
+                docker login --username AWS --password-stdin ${split("/", var.docker_image)[0]}
               
-              # Run the container
+              # Run the container (proper escaping for Terraform)
               docker run -d -p 9090:8080 \
                 --name springboot-app \
                 ${var.docker_image}
               EOF
-
   tags = {
     Name = "backend-server"
   }
