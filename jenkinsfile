@@ -62,16 +62,24 @@ pipeline {
 
         stage('Terraform Apply') {
             steps {
-                dir(env.TERRAFORM_DIR) {
-                    sh 'terraform init -upgrade -input=false'
-                    sh """
-                        terraform apply -auto-approve \
-                            -var="docker_image=${env.ECR_REPO_URI}:${BUILD_NUMBER}" \
-                            -var="region=${env.AWS_REGION}"
-                    """
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: 'aws-creds-backup',
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    dir(env.TERRAFORM_DIR) {
+                        sh 'terraform init -upgrade -input=false'
+                        sh """
+                            terraform apply -auto-approve \
+                                -var="docker_image=${env.ECR_REPO_URI}:${BUILD_NUMBER}" \
+                                -var="region=${env.AWS_REGION}"
+                        """
+                    }
                 }
             }
         }
+
     }
 
     post {
